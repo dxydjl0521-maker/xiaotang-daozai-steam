@@ -364,7 +364,12 @@ fn launch_installer(work: &std::path::Path) -> Result<(), String> {
 fn launch_installer(_: &std::path::Path) -> Result<(), String> { Err("仅支持 Windows 应用内更新".into()) }
 
 fn version(value: &str) -> Option<[u64; 3]> {
-    let mut parts = value.strip_prefix('v').unwrap_or(value).split('.');
+    let value = value.strip_prefix('v').unwrap_or(value);
+    let (numeric, metadata) = value.split_once('+').map_or((value, None), |(numeric, metadata)| (numeric, Some(metadata)));
+    if metadata.is_some_and(|metadata| metadata.is_empty() || metadata.split('.').any(|part|
+        part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    )) { return None; }
+    let mut parts = numeric.split('.');
     let mut numbers = [0; 3];
     for number in &mut numbers {
         let part = parts.next()?;
