@@ -66,7 +66,7 @@ impl App {
             match slot {
                 bar::CLOCK if self.clock_on_dock() => items.push(SideItem::Clock),
                 bar::BATTERY if self.battery_on_dock() && self.resident_power.0.is_some() => items.push(SideItem::Battery),
-                bar::PET if self.settings.pet && (!self.settings.split_docks || self.settings.dock == self.dock()) => items.push(SideItem::Pet),
+                bar::PET if self.pet_assigned_here() => items.push(SideItem::Pet),
                 bar::MUSIC if page_on(0) && (self.media.is_music() || pinned(0)) => {
                     items.push(SideItem::Music);
                     if self.island_lyrics_available() { items.push(SideItem::Lyric); }

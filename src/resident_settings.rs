@@ -197,16 +197,17 @@ impl crate::app::App {
             island_outline(side_right,Dock::Right,pill,1.0),
         ];
         let fill=self.preview_fill();
-        let transfer_skin=self.resident_transfer_skin(fill);
+        let island_rim=self.resident_preview_rim();
+        let transfer_skin=self.resident_transfer_skin(fill,island_rim);
         if pill {ui.painter().rect_filled(top_body,15.0*top_scale,fill);}
         else {crate::shape::fill(ui.painter(),top_body,8.0*top_scale,10.0*top_scale,12.0*top_scale,fill,1.0/ui.ctx().pixels_per_point());}
         for (dock,rect) in [(Dock::Left,side_left),(Dock::Right,side_right)] {
             if pill {ui.painter().rect_filled(rect,18.0,fill);}
             else {crate::shape::fill_docked(ui.painter(),rect,dock,5.0,8.0,12.0,fill,1.0/ui.ctx().pixels_per_point());}
-            if self.settings.skin.is_glass(){ui.painter().rect_stroke(rect,12.0,egui::Stroke::new(1.0_f32,Color32::from_white_alpha(60)),egui::StrokeKind::Inside);}
+            if let Some(rim_color)=island_rim{ui.painter().rect_stroke(rect,12.0,egui::Stroke::new(1.0_f32,rim_color),egui::StrokeKind::Inside);}
         }
-        if self.settings.skin.is_glass() {
-            let rim=egui::Stroke::new(1.0_f32,Color32::from_white_alpha(60));
+        if let Some(rim_color)=island_rim {
+            let rim=egui::Stroke::new(1.0_f32,rim_color);
             if pill {ui.painter().rect_stroke(top_body,15.0*top_scale,rim,egui::StrokeKind::Inside);}
             else {
                 let edge=Rect::from_min_max(top_body.min+Vec2::new(0.5,0.0),top_body.max-Vec2::new(0.5,0.5));
@@ -282,7 +283,20 @@ impl crate::app::App {
                 );
                 let rank=if live_target {
                     pointer.map(|point|{
-                        let coordinate=if target==Dock::Top{point.x}else{point.y};
+                        // Before the pointer crosses the island body, the free
+                        // transfer icon follows the pointer with the same 0.62
+                        // interpolation used by its renderer. Use that rendered
+                        // center for insertion so the placeholder does not run
+                        // ahead of the icon (most noticeable when dragging a
+                        // side-dock item leftward into the top dock).
+                        let drag_center=if entered_target.is_some_and(|(_,_,dock)|dock==target){
+                            point
+                        }else{
+                            transfer_state
+                                .filter(|state|state.phase==TransferPhase::Free)
+                                .map_or(point,|state|state.current.lerp(point,0.62))
+                        };
+                        let coordinate=if target==Dock::Top{drag_center.x}else{drag_center.y};
                         positions.iter().position(|(_,center)|coordinate<if target==Dock::Top{center.x}else{center.y}).unwrap_or(positions.len())
                     })
                 }else{
@@ -372,7 +386,11 @@ impl crate::app::App {
             ||transfer_state.is_some_and(|state|state.phase==TransferPhase::Engulfing&&state.target==Some(Dock::Right))
             ||entered_target.is_some_and(|(_,_,dock)|dock==Dock::Right)
             ||settling.is_some_and(|state|state.source==Dock::Right||state.target==Some(Dock::Right));
-        let top_slots:Vec<_>=order.iter().copied().filter(|slot|self.resident_preview_assigned_for_transfer(*slot,Dock::Top,inside_assignment)).collect();
+        // Keep the target lane's indices based only on its current items. During
+        // capture `top_slots` also contains the incoming item, while `rank` and
+        // `base_rank` intentionally exclude it; mixing those lists shifts the
+        // wrong neighbors and can stack the incoming icon over battery/focus.
+        let top_target_slots:Vec<_>=order.iter().copied().filter(|slot|self.resident_preview_assigned(*slot,Dock::Top)).collect();
         let mut movement=None;
         let mut cross_drop=None;
         let mut dock_positions:[Vec<(usize,Pos2)>;3]=std::array::from_fn(|_|Vec::new());
@@ -384,7 +402,7 @@ impl crate::app::App {
             let base_x=cx+offset;
             let shift=cross_reorder.filter(|(dock,_,_,_)|*dock==Dock::Top)
                 .map(|(_,insert,base,gap)|{
-                    let index=top_slots.iter().position(|value|*value==slot).unwrap_or(usize::MAX);
+                    let index=top_target_slots.iter().position(|value|*value==slot).unwrap_or(usize::MAX);
                     if insert>base&&index>=base&&index<insert{-gap}
                     else if insert<base&&index>=insert&&index<base{gap}
                     else{0.0}
@@ -713,10 +731,19 @@ impl crate::app::App {
     }
 
     fn draw_transfer_icon(&mut self,ui:&egui::Ui,center:Pos2,slot:usize,stage:Rect,layout:&Layout,count:usize,alpha:f32,scale:f32){
+        let layer=ui.layer_id();
+        let content_from=crate::skin_paint::shape_count(ui.ctx(),layer);
         let mut base=Card::new(ui,center-Vec2::new(18.0,15.0)*scale,stage);
         base.s=scale;
         let icon=base.faded(alpha).ghost();
         self.draw_resident_preview_icon(&icon,slot,18.0,15.0,layout,count,true);
+        // Transfer icons are drawn after the preview's normal palette pass.
+        // Recolor this isolated range too, so white glyphs/mascot details do
+        // not disappear against cream or light-glass vesicles while dragging.
+        if let Some(palette)=self.skin_palette(){
+            let end=crate::skin_paint::shape_count(ui.ctx(),layer);
+            crate::skin_paint::recolor_layer(ui.ctx(),layer,&[(content_from,end)],&palette);
+        }
     }
 
     fn commit_resident_transfer(&mut self,order:&mut Vec<usize>,slot:usize,source:crate::model::Dock,target:crate::model::Dock,target_index:usize){
@@ -731,8 +758,15 @@ impl crate::app::App {
         self.settings.save();
     }
 
-    fn resident_transfer_skin(&self,fill:Color32)->TransferSkin{
-        transfer_skin_from_fill(fill)
+    fn resident_transfer_skin(&self,fill:Color32,island_rim:Option<Color32>)->TransferSkin{
+        transfer_skin_from_fill(fill,island_rim)
+    }
+
+    /// This is also used to draw the preview island itself, so transfer edges
+    /// inherit the exact outline treatment of the active skin. Skins without a
+    /// separate outline keep the island surface color as their edge material.
+    fn resident_preview_rim(&self)->Option<Color32>{
+        self.settings.skin.is_glass().then_some(Color32::from_white_alpha(60))
     }
 
     fn set_resident_dock(&mut self,slot:usize,dock:crate::model::Dock){
@@ -1093,7 +1127,7 @@ fn draw_free_trail(painter:&egui::Painter,center:Pos2,trail_angle:f32,radius:f32
 fn draw_vesicle(painter:&egui::Painter,center:Pos2,radius:f32,angle:f32,stretch:f32,skin:TransferSkin,alpha:f32){
     if radius<=0.2||alpha<=0.01{return;}
     let points=vesicle_contour(center,radius,angle,stretch);
-    painter.add(egui::Shape::convex_polygon(points,with_opacity(skin.fill,alpha*0.86),egui::Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(points,with_opacity(skin.fill,alpha),egui::Stroke::NONE));
     let direction=Vec2::new(angle.cos(),angle.sin());
     let perpendicular=Vec2::new(-direction.y,direction.x);
     painter.circle_filled(center-direction*(radius*0.28)-perpendicular*(radius*0.28),radius*0.15,with_opacity(skin.sheen,alpha*0.22));
@@ -1120,16 +1154,16 @@ fn with_opacity(color:Color32,opacity:f32)->Color32{
     Color32::from_rgba_unmultiplied(r,g,b,(a as f32*opacity.clamp(0.0,1.0)).round() as u8)
 }
 
-/// Build transfer material from the island's own surface color. These shapes
-/// share the island preview's palette-recolor pass, so added skins inherit the
-/// same mapping without adding a `Skin` match here.
-fn transfer_skin_from_fill(fill:Color32)->TransferSkin{
+/// Build transfer material from the island's own surface and outline. The
+/// transfer renderer does not invent a contrasting border for skins whose
+/// island body has no separate outline (classic, fluid, and future skins).
+fn transfer_skin_from_fill(fill:Color32,island_rim:Option<Color32>)->TransferSkin{
     let [r,g,b,_]=fill.to_srgba_unmultiplied();
     let luminance=0.2126*r as f32+0.7152*g as f32+0.0722*b as f32;
     let contrast=if luminance>142.0{Color32::BLACK}else{Color32::WHITE};
     let rim=tint_material(fill,contrast,0.36,168);
-    let edge=tint_material(fill,contrast,0.16,190);
-    let sheen=tint_material(fill,Color32::WHITE,0.34,66);
+    let edge=island_rim.unwrap_or(fill);
+    let sheen=island_rim.unwrap_or(fill);
     TransferSkin{fill,rim,edge,sheen}
 }
 

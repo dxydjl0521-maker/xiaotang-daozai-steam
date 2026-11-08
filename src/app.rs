@@ -1708,7 +1708,8 @@ impl App {
         self.settings.minimal || self.settings.minimal_on(self.dock()) || self.browser_minimal_active
             || self.hover_hide_active && !self.hover_hide_restoring
     }
-    pub(crate) fn pet_enabled(&self)->bool {self.settings.pet && !self.settings.minimal && !self.settings.minimal_on(self.settings.dock) && !self.side()}
+    pub(crate) fn pet_assigned_here(&self)->bool {self.settings.pet && (!self.settings.split_docks || self.settings.dock==self.dock())}
+    pub(crate) fn pet_enabled(&self)->bool {self.pet_assigned_here() && !self.settings.minimal && !self.settings.minimal_on(self.dock()) && !self.side()}
     pub(crate) fn pet_space(&self)->f32 {if self.pet_enabled(){44.0}else{0.0}}
     fn lyric_focus_space(&self)->f32 {if self.pomo.running && self.page_on_dock(1){crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
@@ -2338,7 +2339,7 @@ impl App {
             self.draw_notice(&Card::new(ui,rect.min,rect.intersect(ui.max_rect())),rect,&self.hud_notice.clone().unwrap(),&mut cmds);
             if ctx.input(|i|i.pointer.any_pressed()&&i.pointer.interact_pos().is_some_and(|p|!rect.contains(p)&&!notice_rect.is_some_and(|r|r.contains(p)))){self.notice_details=false;}
         }
-        let pet_alpha=self.pet_a*(1.0-smoothstep(0.0,0.3,pc));
+        let pet_alpha=if self.pet_assigned_here(){self.pet_a*(1.0-smoothstep(0.0,0.3,pc))}else{0.0};
         if pet_alpha>0.004 && !minimal_pill {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
